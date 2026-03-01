@@ -1,0 +1,29 @@
+# Pentagon 5-receiver geometry preset
+# Receivers arranged in a regular pentagon with ~100 km baseline
+
+receivers:
+  - id: "RX0"
+    latitude: 40.0
+    longitude: -75.0
+    x: 0.0
+    y: 100000.0
+  - id: "RX1"
+    latitude: 40.3
+    longitude: -74.4
+    x: 95106.0
+    y: 30902.0
+  - id: "RX2"
+    latitude: 39.7
+    longitude: -74.4
+    x: 58779.0
+    y: -80902.0
+  - id: "RX3"
+    latitude: 39.7
+    longitude: -75.6
+    x: -58779.0
+    y: -80902.0
+  - id: "RX4"
+    latitude: 40.3
+    longitude: -75.6
+    x: -95106.0
+    y: 30902.0

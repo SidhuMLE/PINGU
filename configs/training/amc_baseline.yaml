@@ -1,0 +1,25 @@
+# AMC CNN training configuration
+
+training:
+  batch_size: 128
+  epochs: 100
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+  snr_range_db: [-10, 30]
+  samples_per_class: 20000
+  val_split: 0.2
+  num_workers: 4
+
+classifier:
+  model: "amc_cnn"
+  input_length: 1024
+  classes:
+    - ssb
+    - cw
+    - am
+    - fsk2
+    - fsk4
+    - bpsk
+    - qpsk
+    - noise

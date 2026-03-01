@@ -1,0 +1,78 @@
+# PINGU Default Configuration
+
+receivers:
+  count: 5
+  sample_rate: 48000.0
+  geometry_preset: "pentagon_5rx"
+
+channelizer:
+  method: "polyphase"     # polyphase | fft
+  n_channels: 64
+  overlap_factor: 2
+  window: "hann"
+
+detector:
+  method: "energy"
+  pfa: 1.0e-6            # probability of false alarm
+  block_size: 1024
+  guard_cells: 4
+  reference_cells: 16
+
+classifier:
+  model: "amc_cnn"
+  checkpoint: null        # path to trained model checkpoint
+  classes:
+    - ssb
+    - cw
+    - am
+    - fsk2
+    - fsk4
+    - bpsk
+    - qpsk
+    - noise
+  input_length: 1024
+  confidence_threshold: 0.5
+
+tdoa:
+  method: "phat"          # phat | scot | ml
+  fft_size: 4096
+  interpolation: "parabolic"  # parabolic | sinc
+  max_delay_samples: 512
+
+integrator:
+  method: "kalman"
+  process_noise: 1.0e-12   # very small for stationary target
+  initial_variance: 1.0e-6
+  convergence_factor: 0.1   # declare converged when var < factor * CRLB
+
+locator:
+  solver: "levenberg_marquardt"
+  grid_search:
+    enabled: true
+    n_points: 50           # per dimension
+    extent_km: 500
+  max_iterations: 100
+  tolerance: 1.0e-8
+  confidence_level: 0.95
+
+synthetic:
+  snr_range_db: [-10, 30]
+  duration_s: 0.1
+  sample_rate: 48000.0
+  modulations:
+    - ssb
+    - cw
+    - am
+    - fsk2
+    - fsk4
+    - bpsk
+    - qpsk
+
+training:
+  batch_size: 64
+  epochs: 50
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  snr_range_db: [-10, 30]
+  samples_per_class: 10000
+  val_split: 0.2
