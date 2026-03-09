@@ -206,21 +206,13 @@ class PinguPipeline:
         else:
             tdoa_method = self._tdoa_method
 
-        # 3. Extract narrowband IQ for TDoA estimation.
-        #    Pass complex IQ directly — preserves both I and Q channels.
+        # 3. Select IQ for TDoA estimation.
+        #    Always use full-rate wideband IQ for TDoA — the channelizer
+        #    decimates to fs/M which destroys time-delay resolution.
+        #    The channelizer's role is detection and classification only.
         signals_for_tdoa: dict[str, np.ndarray] = {}
-        if len(detections) >= 2:
-            common_channel = self._find_common_channel(detections, channelized)
-            if common_channel is not None:
-                for rx_id in self._receiver_ids:
-                    if rx_id in channelized:
-                        ch_frame = channelized[rx_id]
-                        signals_for_tdoa[rx_id] = ch_frame.channels[common_channel]
-
-        # Fallback: use raw wideband IQ (complex).
-        if len(signals_for_tdoa) < 2:
-            for rx_id, frame in frames.items():
-                signals_for_tdoa[rx_id] = frame.samples
+        for rx_id, frame in frames.items():
+            signals_for_tdoa[rx_id] = frame.samples
 
         # 4. Estimate TDoAs for all pairs.
         sample_rate = next(iter(frames.values())).sample_rate
@@ -343,23 +335,34 @@ class PinguPipeline:
         detections: dict[str, list[Detection]],
         channelized: dict[str, ChannelizedFrame],
     ) -> int | None:
-        """Find the channel index with the most concurrent detections.
+        """Find the best channel detected across multiple receivers.
 
-        Returns the channel index detected across the largest number of
-        receivers, or ``None`` if no common channel is found.
+        First filters to channels detected in >= 2 receivers, then picks the
+        one with the highest average SNR.  This avoids selecting leakage
+        channels that appear in many receivers but carry little signal energy.
+
+        Returns the channel index, or ``None`` if no common channel is found.
         """
-        # Count how many receivers detected each channel index.
+        # Track detection count and cumulative SNR per channel.
         channel_counts: dict[int, int] = {}
+        channel_snr_sum: dict[int, float] = {}
         for rx_id, det_list in detections.items():
             for det in det_list:
                 ch = det.channel_index
                 channel_counts[ch] = channel_counts.get(ch, 0) + 1
+                channel_snr_sum[ch] = channel_snr_sum.get(ch, 0.0) + det.snr_estimate
 
         if not channel_counts:
             return None
 
-        # Return the channel with the most detections.
-        best_channel = max(channel_counts, key=channel_counts.get)  # type: ignore[arg-type]
-        if channel_counts[best_channel] >= 2:
-            return best_channel
-        return None
+        # Keep only channels detected in >= 2 receivers.
+        candidates = {ch for ch, cnt in channel_counts.items() if cnt >= 2}
+        if not candidates:
+            return None
+
+        # Among candidates, pick the one with highest average SNR.
+        best_channel = max(
+            candidates,
+            key=lambda ch: channel_snr_sum[ch] / channel_counts[ch],
+        )
+        return best_channel

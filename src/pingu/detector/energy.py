@@ -97,31 +97,74 @@ class EnergyDetector:
                 segment = frame.channels[ch, start:end]
                 energy[ch, blk] = float(np.sum(np.abs(segment) ** 2))
 
-        # Detection threshold (degrees of freedom = 2 * block_size for complex)
-        threshold_factor = self._compute_threshold(self.pfa, effective_block_size)
+        # Determine CFAR mode: time-domain (many blocks per channel) or
+        # frequency-domain (scan across channels when blocks are scarce).
+        min_cfar_cells = 2 * (self.guard_cells + self.reference_cells) + 1
+        use_freq_cfar = n_blocks < min_cfar_cells and n_channels >= min_cfar_cells
 
-        # CFAR scan over each channel
-        for ch in range(n_channels):
-            channel_energy = energy[ch]
-            detected = self._cfar_scan(channel_energy, threshold_factor)
+        if use_freq_cfar:
+            # Frequency-domain CFAR: compare each channel's total energy
+            # against its neighboring channels.
+            channel_energies = energy.sum(axis=1)  # shape (n_channels,)
+            threshold_factor = self._compute_threshold(
+                self.pfa, effective_block_size * n_blocks
+            )
 
-            if detected:
-                # Aggregate: report highest SNR block for this channel
-                noise_floor = self._estimate_noise_floor(channel_energy)
-                peak_energy = float(np.max(channel_energy))
-                snr_linear = peak_energy / noise_floor if noise_floor > 0 else float("inf")
-                snr_db = float(10.0 * np.log10(max(snr_linear, 1e-30)))
+            for ch in range(n_channels):
+                ref_indices = self._freq_cfar_refs(ch, n_channels)
+                if not ref_indices:
+                    continue
+                noise_estimate = float(np.mean(channel_energies[ref_indices]))
+                dof = 2 * effective_block_size * n_blocks
+                sigma2_hat = noise_estimate / dof
+                adaptive_threshold = threshold_factor * sigma2_hat
 
-                detections.append(
-                    Detection(
-                        receiver_id=frame.receiver_id,
-                        channel_index=ch,
-                        center_freq=float(frame.channel_freqs[ch]),
-                        bandwidth=frame.channel_bw,
-                        snr_estimate=snr_db,
-                        timestamp=frame.timestamp,
+                if channel_energies[ch] > adaptive_threshold:
+                    snr_linear = (
+                        channel_energies[ch] / noise_estimate
+                        if noise_estimate > 0
+                        else float("inf")
                     )
-                )
+                    snr_db = float(10.0 * np.log10(max(snr_linear, 1e-30)))
+                    detections.append(
+                        Detection(
+                            receiver_id=frame.receiver_id,
+                            channel_index=ch,
+                            center_freq=float(frame.channel_freqs[ch]),
+                            bandwidth=frame.channel_bw,
+                            snr_estimate=snr_db,
+                            timestamp=frame.timestamp,
+                        )
+                    )
+        else:
+            # Time-domain CFAR: scan over blocks within each channel.
+            threshold_factor = self._compute_threshold(
+                self.pfa, effective_block_size
+            )
+            for ch in range(n_channels):
+                channel_energy = energy[ch]
+                detected = self._cfar_scan(channel_energy, threshold_factor)
+
+                if detected:
+                    noise_floor = self._estimate_noise_floor(channel_energy)
+                    peak_energy = float(np.max(channel_energy))
+                    snr_linear = (
+                        peak_energy / noise_floor
+                        if noise_floor > 0
+                        else float("inf")
+                    )
+                    snr_db = float(10.0 * np.log10(max(snr_linear, 1e-30)))
+
+                    detections.append(
+                        Detection(
+                            receiver_id=frame.receiver_id,
+                            channel_index=ch,
+                            center_freq=float(frame.channel_freqs[ch]),
+                            bandwidth=frame.channel_bw,
+                            snr_estimate=snr_db,
+                            timestamp=frame.timestamp,
+                        )
+                    )
 
         return detections
 
@@ -210,6 +253,20 @@ class EnergyDetector:
                 return True
 
         return False
+
+    def _freq_cfar_refs(self, ch: int, n_channels: int) -> list[int]:
+        """Return reference-cell indices for frequency-domain CFAR.
+
+        Wraps around channel boundaries so that edge channels still get a
+        full set of reference cells.
+        """
+        refs: list[int] = []
+        half_window = self.guard_cells + self.reference_cells
+        for offset in range(-half_window, half_window + 1):
+            if offset == 0 or abs(offset) <= self.guard_cells:
+                continue
+            refs.append((ch + offset) % n_channels)
+        return refs
 
     def _estimate_noise_floor(self, energy_cells: NDArray[np.float64]) -> float:
         """Estimate the noise floor from the energy cells.
