@@ -145,6 +145,60 @@ class TestPolyphaseChannelizer:
         with pytest.raises(ValueError, match="overlap_factor"):
             PolyphaseChannelizer(n_channels=8, overlap_factor=0)
 
+    @pytest.mark.parametrize("freq_offset,expected_channel", [
+        (+2000.0, 1),   # Between ch0 (0 Hz) and ch1 (3000 Hz), closer to ch1
+        (+8000.0, 3),   # Between ch2 (6000 Hz) and ch3 (9000 Hz), closer to ch3
+        (-5000.0, 14),  # Between ch14 (-6000 Hz) and ch15 (-3000 Hz), closer to ch14
+    ])
+    def test_off_center_tone_maps_to_nearest_channel(
+        self, freq_offset: float, expected_channel: int
+    ) -> None:
+        """Tones between channel centers should map to the nearest channel."""
+        n_channels = 16
+        sample_rate = 48_000.0
+
+        ch = PolyphaseChannelizer(n_channels=n_channels, overlap_factor=4)
+        frame = _make_tone_frame(
+            freq_offset=freq_offset, sample_rate=sample_rate, duration=0.05
+        )
+        result = ch.channelize(frame)
+
+        energy = np.sum(np.abs(result.channels.astype(np.complex128)) ** 2, axis=1)
+        peak_channel = int(np.argmax(energy))
+
+        assert peak_channel == expected_channel, (
+            f"Tone at {freq_offset:+.0f} Hz: expected channel {expected_channel}, "
+            f"got channel {peak_channel}"
+        )
+
+    def test_three_tones_detected_in_correct_channels(self) -> None:
+        """Three simultaneous tones should each appear in the correct channel."""
+        n_channels = 16
+        sample_rate = 48_000.0
+        channel_bw = sample_rate / n_channels
+        n_samples = int(0.05 * sample_rate)
+        t = np.arange(n_samples) / sample_rate
+
+        offsets = [+2000.0, +8000.0, -5000.0]
+        signal = sum(np.exp(2j * np.pi * f * t) for f in offsets)
+        signal = signal.astype(np.complex64)
+
+        frame = IQFrame(
+            receiver_id="RX0", samples=signal,
+            sample_rate=sample_rate, center_freq=14.1e6, timestamp=0.0,
+        )
+
+        ch = PolyphaseChannelizer(n_channels=n_channels, overlap_factor=4)
+        result = ch.channelize(frame)
+
+        energy = np.sum(np.abs(result.channels.astype(np.complex128)) ** 2, axis=1)
+        top3 = set(np.argsort(energy)[-3:])
+
+        expected = {
+            round(f / channel_bw) % n_channels for f in offsets
+        }  # {1, 3, 14}
+        assert top3 == expected, f"Top-3 channels {top3} != expected {expected}"
+
 
 # ---------------------------------------------------------------------------
 # FFTChannelizer tests

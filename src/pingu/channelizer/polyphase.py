@@ -61,10 +61,12 @@ class PolyphaseChannelizer(BaseChannelizer):
         )
 
         # Decompose into polyphase branches: shape (n_channels, overlap_factor)
-        # Branch k contains taps h[k], h[k+M], h[k+2M], ...
+        # Type-2 decomposition: E_k[n] = h[nM + (M-1-k)], required for
+        # the analysis filterbank with DFT (not IDFT).  The column reversal
+        # ensures that off-center tones map to the correct channel index.
         self._polyphase_branches: NDArray[np.float64] = self._prototype.reshape(
             overlap_factor, n_channels
-        ).T
+        )[:, ::-1].T
 
     # ------------------------------------------------------------------
     # BaseChannelizer interface
