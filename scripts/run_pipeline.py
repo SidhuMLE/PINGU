@@ -26,9 +26,10 @@ if str(_project_root / "src") not in sys.path:
 
 from pingu.config import load_config
 from pingu.pipeline.runner import PinguPipeline
+from pingu.scenarios.runner import build_receivers
 from pingu.synthetic.scenarios import TDoAScenario
 from pingu.tdoa.gcc import select_gcc_method
-from pingu.types import ModulationType, ReceiverConfig
+from pingu.types import ModulationType
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,31 +73,6 @@ def parse_args() -> argparse.Namespace:
         help="Directory to save plots (default: output/)",
     )
     return parser.parse_args()
-
-
-def build_receivers(n: int = 5, radius: float = 100_000.0) -> list[ReceiverConfig]:
-    """Create a regular polygon of receivers.
-
-    Args:
-        n: Number of receiver stations.
-        radius: Radius of the polygon in metres.
-
-    Returns:
-        List of ReceiverConfig with Cartesian x, y positions.
-    """
-    receivers = []
-    for i in range(n):
-        angle = np.pi / 2 + 2 * np.pi * i / n
-        receivers.append(
-            ReceiverConfig(
-                id=f"RX{i}",
-                latitude=40.0 + 0.3 * np.sin(angle),
-                longitude=-75.0 + 0.4 * np.cos(angle),
-                x=radius * np.cos(angle),
-                y=radius * np.sin(angle),
-            )
-        )
-    return receivers
 
 
 def main() -> None:

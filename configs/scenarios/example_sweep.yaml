@@ -1,0 +1,13 @@
+# Example scenario sweep: test all modulations across SNR range.
+#
+# Usage:
+#   uv run python scripts/run_scenarios.py --manifest configs/scenarios/example_sweep.yaml
+#   uv run python scripts/run_scenarios.py --manifest configs/scenarios/example_sweep.yaml --plot --csv
+
+sweep:
+  modulations: [cw, ssb, am, bpsk, qpsk, fsk2, fsk4]
+  snr_range: [0, 30, 10]      # 0, 10, 20, 30 dB
+  positions:
+    - [30000, -20000]          # inside receiver polygon
+  n_frames: 20
+  seed: 42
