@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from scipy.fft import fft, ifft
 
 from pingu.tdoa.peak_interpolation import parabolic_interpolation
-from pingu.types import TDoAEstimate
+from pingu.types import ModulationType, TDoAEstimate
 
 
 # Regularization floor to avoid division by zero in spectral weighting.
@@ -41,8 +41,9 @@ def _prepare_spectra(
     Returns:
         Tuple of (X, Y) complex spectra, each of length *nfft*.
     """
-    X = fft(np.asarray(x, dtype=np.float64), n=nfft)
-    Y = fft(np.asarray(y, dtype=np.float64), n=nfft)
+    dtype = np.complex128 if np.iscomplexobj(x) or np.iscomplexobj(y) else np.float64
+    X = fft(np.asarray(x, dtype=dtype), n=nfft)
+    Y = fft(np.asarray(y, dtype=dtype), n=nfft)
     return X, Y
 
 
@@ -196,11 +197,74 @@ def gcc_ml(
     return lags / fs, cc
 
 
+def gcc_basic(
+    x: NDArray,
+    y: NDArray,
+    fs: float,
+    max_delay_samples: int | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Unweighted (standard) cross-correlation.
+
+    No spectral whitening is applied.  This is the correct method for
+    narrowband signals (CW, SSB) where the signal energy concentrates in
+    only a few FFT bins — PHAT would amplify noise in the remaining bins.
+
+    Args:
+        x: Signal from receiver *i*.
+        y: Signal from receiver *j*.
+        fs: Sampling frequency (Hz).
+        max_delay_samples: Optional maximum lag to retain.
+
+    Returns:
+        ``(lags_seconds, correlation)`` as float64 arrays.
+    """
+    n = len(x) + len(y) - 1
+    nfft = _next_pow2(n)
+    X, Y = _prepare_spectra(x, y, nfft)
+
+    G_xy = X * np.conj(Y)
+    corr = np.real(ifft(G_xy, n=nfft)).astype(np.float64)
+
+    lags, cc = _trim_correlation(corr, nfft, max_delay_samples)
+    return lags / fs, cc
+
+
+# --------------------------------------------------------------------------- #
+# Modulation-aware method selection
+# --------------------------------------------------------------------------- #
+
+_MODULATION_GCC_MAP: dict[ModulationType, str] = {
+    ModulationType.CW: "basic",
+    ModulationType.SSB: "scot",
+    ModulationType.AM: "scot",
+    ModulationType.FSK2: "phat",
+    ModulationType.FSK4: "phat",
+    ModulationType.BPSK: "phat",
+    ModulationType.QPSK: "phat",
+    ModulationType.NOISE: "phat",
+}
+
+
+def select_gcc_method(modulation: ModulationType | None) -> str:
+    """Choose the best GCC weighting method for a given modulation type.
+
+    Args:
+        modulation: Detected modulation type, or ``None`` for unknown.
+
+    Returns:
+        One of ``"basic"``, ``"scot"``, ``"phat"``.
+    """
+    if modulation is None:
+        return "phat"
+    return _MODULATION_GCC_MAP.get(modulation, "phat")
+
+
 # --------------------------------------------------------------------------- #
 # Dispatcher / convenience
 # --------------------------------------------------------------------------- #
 
 _GCC_METHODS = {
+    "basic": gcc_basic,
     "phat": gcc_phat,
     "scot": gcc_scot,
     "ml": gcc_ml,
@@ -211,11 +275,14 @@ def estimate_tdoa(
     x: NDArray,
     y: NDArray,
     fs: float,
-    method: Literal["phat", "scot", "ml"] = "phat",
+    method: Literal["basic", "phat", "scot", "ml"] = "phat",
     receiver_i: str = "RX0",
     receiver_j: str = "RX1",
     center_freq: float = 0.0,
     timestamp: float = 0.0,
+    bandwidth: float | None = None,
+    snr_linear: float | None = None,
+    integration_time: float | None = None,
     **kwargs,
 ) -> TDoAEstimate:
     """Estimate the TDoA between two signals using GCC + peak interpolation.
@@ -230,11 +297,14 @@ def estimate_tdoa(
         x: Signal from receiver *i*.
         y: Signal from receiver *j*.
         fs: Sampling frequency (Hz).
-        method: GCC weighting --- ``"phat"``, ``"scot"``, or ``"ml"``.
+        method: GCC weighting --- ``"basic"``, ``"phat"``, ``"scot"``, or ``"ml"``.
         receiver_i: Identifier for the first receiver.
         receiver_j: Identifier for the second receiver.
         center_freq: Centre frequency of the signal (Hz).
         timestamp: Epoch timestamp of the measurement.
+        bandwidth: Signal bandwidth in Hz (for CRLB variance).
+        snr_linear: Linear SNR (for CRLB variance).
+        integration_time: Integration time in seconds (for CRLB variance).
         **kwargs: Forwarded to the underlying GCC function (e.g.
             ``max_delay_samples``).
 
@@ -262,9 +332,15 @@ def estimate_tdoa(
     dt = lags_sec[1] - lags_sec[0] if len(lags_sec) > 1 else 1.0 / fs
     delay_sec = lags_sec[0] + frac_idx * dt
 
-    # Rough variance estimate: inversely proportional to squared peak value.
-    # This is a heuristic; for a proper bound see uncertainty.crlb_tdoa.
-    variance = (1.0 / (fs * max(abs(peak_val), _EPS))) ** 2
+    # Use CRLB when bandwidth/SNR metadata is available; otherwise heuristic.
+    if bandwidth is not None and snr_linear is not None and integration_time is not None:
+        try:
+            from pingu.tdoa.uncertainty import crlb_tdoa
+            variance = crlb_tdoa(bandwidth, snr_linear, integration_time, center_freq)
+        except ValueError:
+            variance = (1.0 / (fs * max(abs(peak_val), _EPS))) ** 2
+    else:
+        variance = (1.0 / (fs * max(abs(peak_val), _EPS))) ** 2
 
     return TDoAEstimate(
         receiver_i=receiver_i,

@@ -34,7 +34,7 @@ classifier:
   confidence_threshold: 0.5
 
 tdoa:
-  method: "phat"          # phat | scot | ml
+  method: "auto"           # auto | basic | phat | scot | ml
   fft_size: 4096
   interpolation: "parabolic"  # parabolic | sinc
   max_delay_samples: 512

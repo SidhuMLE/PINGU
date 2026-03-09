@@ -27,6 +27,7 @@ if str(_project_root / "src") not in sys.path:
 from pingu.config import load_config
 from pingu.pipeline.runner import PinguPipeline
 from pingu.synthetic.scenarios import TDoAScenario
+from pingu.tdoa.gcc import select_gcc_method
 from pingu.types import ModulationType, ReceiverConfig
 
 
@@ -58,6 +59,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=42,
         help="Random seed for reproducibility (default: 42)",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Generate diagnostic plots (position map + convergence)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Directory to save plots (default: output/)",
     )
     return parser.parse_args()
 
@@ -97,6 +109,13 @@ def main() -> None:
 
     # Build receivers and pipeline.
     receivers = build_receivers(n=int(cfg.receivers.get("count", 5)))
+
+    # For synthetic scenarios with known modulation, override auto method
+    # selection to use the correct GCC method directly.
+    modulation = ModulationType.CW
+    if cfg.tdoa.get("method", "auto") == "auto":
+        cfg.tdoa.method = select_gcc_method(modulation)
+
     pipeline = PinguPipeline(config=cfg, receivers=receivers)
 
     # True transmitter position (inside the receiver polygon).
@@ -137,6 +156,31 @@ def main() -> None:
         print(f"Kalman updates:     {pipeline.kalman.n_updates}")
     else:
         print("Pipeline did not produce a position estimate.")
+
+    # --- Visualization ---------------------------------------------------
+    if args.plot:
+        from pingu.visualization import plot_position_map, plot_convergence
+
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Position map
+        fig_map = plot_position_map(
+            receivers=receivers,
+            estimate=estimate,
+            true_pos=tx_position,
+        )
+        map_path = out_dir / "position_map.png"
+        fig_map.savefig(map_path, dpi=150)
+        print(f"\nPosition map saved to {map_path}")
+
+        # Convergence plot
+        if pipeline.variance_history:
+            var_hist = np.array(pipeline.variance_history)
+            fig_conv = plot_convergence(var_hist, title="TDoA Variance Convergence")
+            conv_path = out_dir / "convergence.png"
+            fig_conv.savefig(conv_path, dpi=150)
+            print(f"Convergence plot saved to {conv_path}")
 
 
 if __name__ == "__main__":

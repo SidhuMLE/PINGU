@@ -20,6 +20,7 @@ from pingu.integrator.convergence import ConvergenceMonitor
 from pingu.integrator.kalman import TDoAKalmanFilter
 from pingu.locator.geometry import ReceiverGeometry
 from pingu.locator.solvers import TDoASolver
+from pingu.tdoa.gcc import select_gcc_method
 from pingu.tdoa.pair_manager import PairManager
 from pingu.types import (
     ChannelizedFrame,
@@ -89,6 +90,22 @@ class PinguPipeline:
             reference_cells=int(det_cfg.get("reference_cells", 16)),
         )
 
+        # --- Classifier (optional) ----------------------------------------
+        self._classifier = None
+        cls_cfg = config.get("classifier", {})
+        checkpoint = cls_cfg.get("checkpoint", None)
+        if checkpoint is not None:
+            from pingu.classifier.inference import AMCInference
+            self._classifier = AMCInference(
+                checkpoint_path=checkpoint,
+                input_length=int(cls_cfg.get("input_length", 1024)),
+                class_names=list(cls_cfg.get("classes", [])) or None,
+            )
+            logger.info("AMCCNN classifier loaded from %s", checkpoint)
+        self._confidence_threshold: float = float(
+            cls_cfg.get("confidence_threshold", 0.5)
+        )
+
         # --- TDoA pair management ----------------------------------------
         self.pair_manager = PairManager(self._receiver_ids)
         self._tdoa_method: str = config.tdoa.get("method", "phat")
@@ -109,6 +126,10 @@ class PinguPipeline:
         self._convergence_factor: float = float(
             int_cfg.get("convergence_factor", 0.1)
         )
+
+        # Diagnostic history for visualization.
+        self.variance_history: list[np.ndarray] = []
+        self.last_correlations: list[tuple[np.ndarray, np.ndarray, str]] = []
 
         # --- Locator / solver -------------------------------------------
         geometry = ReceiverGeometry(self._receivers)
@@ -159,35 +180,54 @@ class PinguPipeline:
             if det:
                 detections[rx_id] = det
 
+        # 2b. Classify detected signals (if classifier is available).
+        detected_modulation = None
+        if self._classifier is not None and detections:
+            for rx_id, det_list in detections.items():
+                if rx_id in frames:
+                    iq = frames[rx_id].samples
+                    for det in det_list:
+                        try:
+                            mod, conf = self._classifier.classify(iq)
+                            if conf >= self._confidence_threshold:
+                                det.modulation = mod
+                                det.confidence = conf
+                                detected_modulation = mod
+                        except Exception:
+                            logger.debug(
+                                "Classification failed for %s", rx_id,
+                                exc_info=True,
+                            )
+
+        # 2c. Select GCC method.
+        if self._tdoa_method == "auto":
+            tdoa_method = select_gcc_method(detected_modulation)
+            logger.debug("Auto-selected GCC method: %s (mod=%s)", tdoa_method, detected_modulation)
+        else:
+            tdoa_method = self._tdoa_method
+
         # 3. Extract narrowband IQ for TDoA estimation.
-        #    Strategy: use the raw wideband IQ directly when all receivers
-        #    have the signal, since the TDoA GCC methods work on the full
-        #    bandwidth.  If detections are sparse, fall back to the raw IQ.
+        #    Pass complex IQ directly — preserves both I and Q channels.
         signals_for_tdoa: dict[str, np.ndarray] = {}
         if len(detections) >= 2:
-            # Find a common channel index detected across the most receivers.
             common_channel = self._find_common_channel(detections, channelized)
             if common_channel is not None:
                 for rx_id in self._receiver_ids:
                     if rx_id in channelized:
                         ch_frame = channelized[rx_id]
-                        signals_for_tdoa[rx_id] = np.real(
-                            ch_frame.channels[common_channel]
-                        ).astype(np.float64)
+                        signals_for_tdoa[rx_id] = ch_frame.channels[common_channel]
 
-        # Fallback: use raw wideband IQ real component.
+        # Fallback: use raw wideband IQ (complex).
         if len(signals_for_tdoa) < 2:
             for rx_id, frame in frames.items():
-                signals_for_tdoa[rx_id] = np.real(frame.samples).astype(
-                    np.float64
-                )
+                signals_for_tdoa[rx_id] = frame.samples
 
         # 4. Estimate TDoAs for all pairs.
         sample_rate = next(iter(frames.values())).sample_rate
         tdoa_estimates = self.pair_manager.estimate_all_tdoas(
             signals=signals_for_tdoa,
             fs=sample_rate,
-            method=self._tdoa_method,
+            method=tdoa_method,
         )
 
         # Build measurement vectors for the Kalman filter.
@@ -203,9 +243,10 @@ class PinguPipeline:
         self.kalman.predict()
         self.kalman.update(measurements, variances, timestamp=timestamp)
 
-        # Update convergence monitor.
+        # Update convergence monitor and record variance history.
         state = self.kalman.get_state()
         self.convergence_monitor.update(state.covariance)
+        self.variance_history.append(np.diag(state.covariance).copy())
 
         # 6. Check convergence and solve.
         if self.convergence_monitor.is_converged(factor=self._convergence_factor):

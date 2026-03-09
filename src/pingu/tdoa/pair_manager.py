@@ -61,7 +61,7 @@ class PairManager:
         self,
         signals: dict[str, NDArray],
         fs: float,
-        method: Literal["phat", "scot", "ml"] = "phat",
+        method: Literal["basic", "phat", "scot", "ml"] = "phat",
         center_freq: float = 0.0,
         timestamp: float = 0.0,
         **kwargs,
@@ -73,7 +73,7 @@ class PairManager:
                 Every receiver listed in :pyattr:`receiver_ids` must have
                 an entry.
             fs: Sampling frequency (Hz), assumed identical for all receivers.
-            method: GCC weighting method (``"phat"``, ``"scot"``, ``"ml"``).
+            method: GCC weighting method (``"basic"``, ``"phat"``, ``"scot"``, ``"ml"``).
             center_freq: Centre frequency of the signal (Hz).
             timestamp: Epoch timestamp of the measurement.
             **kwargs: Additional keyword arguments forwarded to
