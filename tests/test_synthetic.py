@@ -86,10 +86,15 @@ class TestSignalGeneratorsBasic:
             assert sig.dtype == np.complex64
             assert len(sig) == N_SAMPLES
 
-    def test_generate_signal_invalid_modulation(self):
-        """generate_signal should raise ValueError for unsupported modulation."""
-        with pytest.raises(ValueError, match="No generator"):
-            generate_signal(modulation=ModulationType.NOISE)
+    def test_generate_noise_signal(self):
+        """generate_signal should handle NOISE modulation type."""
+        sig = generate_signal(
+            modulation=ModulationType.NOISE,
+            sample_rate=48_000.0,
+            duration=0.1,
+        )
+        assert sig.dtype == np.complex64
+        assert len(sig) == int(48_000.0 * 0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +323,7 @@ class TestTDoAScenario:
         scenario = TDoAScenario(
             receivers=three_rx,
             tx_position=(30_000.0, 20_000.0),
+            sample_rate=SAMPLE_RATE,
             snr_db=30.0,
         )
         frames = scenario.generate(rng=rng)

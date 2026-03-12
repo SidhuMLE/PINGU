@@ -136,6 +136,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory to save plots and CSV (default: output/scenarios/)",
     )
     parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Print per-frame diagnostic traces for each scenario",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress per-scenario progress output",
@@ -169,6 +174,11 @@ def main() -> None:
     report = ScenarioReport(results)
     report.summary_table()
     report.print_stats()
+
+    # Optional traces.
+    if args.trace:
+        for i in range(len(results)):
+            report.print_frame_traces(scenario_index=i)
 
     # Optional CSV.
     if args.csv:

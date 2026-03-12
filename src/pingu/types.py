@@ -31,7 +31,7 @@ class ReceiverConfig:
     y: float = 0.0           # Cartesian y (m)
     z: float = 0.0           # Cartesian z (m)
     clock_offset: float = 0.0  # Clock offset in seconds (for modeling imperfections)
-    sample_rate: float = 48_000.0
+    sample_rate: float = 2_000_000.0
 
 
 @dataclass
@@ -88,6 +88,36 @@ class IntegratedTDoA:
     pair_labels: list[tuple[str, str]]  # receiver ID pairs
     n_updates: int = 0
     timestamp: float = 0.0
+
+
+@dataclass
+class FrameTrace:
+    """Per-frame diagnostic trace from the pipeline."""
+    frame_index: int
+    timestamp: float = 0.0
+    # Channelizer
+    n_channels_with_energy: int = 0
+    # Detector
+    n_detections: int = 0
+    detected_channels: list[int] = field(default_factory=list)
+    detection_snrs_db: list[float] = field(default_factory=list)
+    # Classifier
+    classified_modulation: str | None = None
+    classification_confidence: float = 0.0
+    # Bandpass + TDoA
+    selected_channel: int | None = None
+    selected_channel_freq: float | None = None
+    gcc_method_used: str = ""
+    tdoa_delays_s: list[float] = field(default_factory=list)
+    tdoa_variances: list[float] = field(default_factory=list)
+    tdoa_peak_values: list[float] = field(default_factory=list)
+    tdoa_true_delays_s: list[float] | None = None
+    # Kalman
+    kalman_innovation: NDArray | None = None
+    kalman_covariance_diag: NDArray | None = None
+    # Solver
+    position_estimate: "PositionEstimate | None" = None
+    solver_converged: bool = False
 
 
 @dataclass

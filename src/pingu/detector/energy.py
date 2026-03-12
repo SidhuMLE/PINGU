@@ -143,7 +143,7 @@ class EnergyDetector:
             )
             for ch in range(n_channels):
                 channel_energy = energy[ch]
-                detected = self._cfar_scan(channel_energy, threshold_factor)
+                detected = self._cfar_scan(channel_energy, threshold_factor, effective_block_size)
 
                 if detected:
                     noise_floor = self._estimate_noise_floor(channel_energy)
@@ -201,6 +201,7 @@ class EnergyDetector:
         self,
         energy_cells: NDArray[np.float64],
         threshold_factor: float,
+        effective_block_size: int | None = None,
     ) -> bool:
         """Run a 1-D CFAR scan over energy cells for a single channel.
 
@@ -218,6 +219,8 @@ class EnergyDetector:
         bool
             True if a detection is declared in this channel.
         """
+        if effective_block_size is None:
+            effective_block_size = self.block_size
         n_cells = len(energy_cells)
         half_window = self.guard_cells + self.reference_cells
 
@@ -245,7 +248,7 @@ class EnergyDetector:
             # Under H0 the expected energy equals dof * sigma^2.  The
             # threshold_factor already encodes the chi-squared critical
             # value for unit variance, so we normalise accordingly.
-            dof = 2 * self.block_size
+            dof = 2 * effective_block_size
             sigma2_hat = noise_estimate / dof
             adaptive_threshold = threshold_factor * sigma2_hat
 

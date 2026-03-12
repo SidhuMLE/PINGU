@@ -13,17 +13,18 @@ from dataclasses import dataclass
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
+from pingu.constants import SPEED_OF_LIGHT
 from pingu.pipeline.runner import PinguPipeline
 from pingu.scenarios.spec import ScenarioSpec
 from pingu.synthetic.scenarios import TDoAScenario
 from pingu.tdoa.gcc import select_gcc_method
-from pingu.types import PositionEstimate, ReceiverConfig
+from pingu.types import FrameTrace, PositionEstimate, ReceiverConfig
 
 
 def build_receivers(
     n: int = 5,
     radius: float = 100_000.0,
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
 ) -> list[ReceiverConfig]:
     """Create a regular polygon of receivers.
 
@@ -80,6 +81,7 @@ class ScenarioResult:
     n_kalman_updates: int
     elapsed_seconds: float
     variance_history: list[np.ndarray]
+    traces: list[FrameTrace] = None  # type: ignore[assignment]
 
 
 class ScenarioRunner:
@@ -114,7 +116,7 @@ class ScenarioRunner:
             self._receivers = list(receivers)
         else:
             n = int(config.receivers.get("count", n_receivers))
-            sample_rate = float(config.receivers.get("sample_rate", 48_000.0))
+            sample_rate = float(config.receivers.get("sample_rate", 2_000_000.0))
             self._receivers = build_receivers(
                 n=n, radius=receiver_radius, sample_rate=sample_rate
             )
@@ -204,6 +206,15 @@ class ScenarioRunner:
 
         converged = pipeline.kalman.n_updates < spec.n_frames
 
+        # Compute true TDoAs for trace comparison.
+        true_delays = self._compute_true_tdoas(
+            spec.tx_position,
+            self._receivers,
+            pipeline.pair_manager.get_pairs(),
+        )
+        for trace in pipeline.traces:
+            trace.tdoa_true_delays_s = true_delays
+
         return ScenarioResult(
             spec=spec,
             estimate=estimate,
@@ -212,4 +223,21 @@ class ScenarioRunner:
             n_kalman_updates=pipeline.kalman.n_updates,
             elapsed_seconds=elapsed,
             variance_history=pipeline.variance_history,
+            traces=pipeline.traces,
         )
+
+    @staticmethod
+    def _compute_true_tdoas(
+        tx_position: tuple[float, float],
+        receivers: list[ReceiverConfig],
+        pairs: list[tuple[str, str]],
+    ) -> list[float]:
+        """Compute ground-truth TDoA delays for all receiver pairs."""
+        rx_map = {r.id: r for r in receivers}
+        true_delays = []
+        for rx_i, rx_j in pairs:
+            ri, rj = rx_map[rx_i], rx_map[rx_j]
+            di = np.sqrt((tx_position[0] - ri.x) ** 2 + (tx_position[1] - ri.y) ** 2)
+            dj = np.sqrt((tx_position[0] - rj.x) ** 2 + (tx_position[1] - rj.y) ** 2)
+            true_delays.append((di - dj) / SPEED_OF_LIGHT)
+        return true_delays

@@ -48,7 +48,7 @@ class ScenarioSpec:
     modulation: ModulationType
     snr_db: float
     tx_position: tuple[float, float]
-    sample_rate: float = 48_000.0
+    sample_rate: float = 2_000_000.0
     center_freq: float = 14.1e6
     duration: float = 0.1
     n_frames: int = 10
@@ -113,7 +113,7 @@ def expand_sweep(sweep_def: dict) -> list[ScenarioSpec]:
     # Shared parameters.
     n_frames = int(sweep_def.get("n_frames", 10))
     base_seed = int(sweep_def.get("seed", 42))
-    sample_rate = float(sweep_def.get("sample_rate", 48_000.0))
+    sample_rate = float(sweep_def.get("sample_rate", 2_000_000.0))
     center_freq = float(sweep_def.get("center_freq", 14.1e6))
     duration = float(sweep_def.get("duration", 0.1))
     config_overrides = sweep_def.get("config_overrides", None)
@@ -167,7 +167,7 @@ def load_scenario_manifest(path: str | Path) -> list[ScenarioSpec]:
                     modulation=mod,
                     snr_db=float(s["snr_db"]),
                     tx_position=pos,
-                    sample_rate=float(s.get("sample_rate", 48_000.0)),
+                    sample_rate=float(s.get("sample_rate", 2_000_000.0)),
                     center_freq=float(s.get("center_freq", 14.1e6)),
                     duration=float(s.get("duration", 0.1)),
                     n_frames=int(s.get("n_frames", 10)),

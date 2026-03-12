@@ -9,5 +9,6 @@ sweep:
   snr_range: [0, 30, 10]      # 0, 10, 20, 30 dB
   positions:
     - [30000, -20000]          # inside receiver polygon
+  sample_rate: 2000000.0
   n_frames: 20
   seed: 42

@@ -2,19 +2,19 @@
 
 receivers:
   count: 5
-  sample_rate: 48000.0
+  sample_rate: 2000000.0
   geometry_preset: "pentagon_5rx"
 
 channelizer:
   method: "polyphase"     # polyphase | fft
   n_channels: 64
-  overlap_factor: 2
+  overlap_factor: 4
   window: "hann"
 
 detector:
   method: "energy"
   pfa: 1.0e-6            # probability of false alarm
-  block_size: 1024
+  block_size: 32768
   guard_cells: 4
   reference_cells: 16
 
@@ -35,9 +35,9 @@ classifier:
 
 tdoa:
   method: "auto"           # auto | basic | phat | scot | ml
-  fft_size: 4096
+  fft_size: 131072
   interpolation: "parabolic"  # parabolic | sinc
-  max_delay_samples: 512
+  max_delay_samples: 10000
 
 integrator:
   method: "kalman"
@@ -58,7 +58,7 @@ locator:
 synthetic:
   snr_range_db: [-10, 30]
   duration_s: 0.1
-  sample_rate: 48000.0
+  sample_rate: 2000000.0
   modulations:
     - ssb
     - cw

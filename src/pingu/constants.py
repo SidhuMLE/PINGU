@@ -24,4 +24,4 @@ HF_BANDS: dict[str, tuple[float, float]] = {
 DEFAULT_NARROWBAND_FS: float = 48_000.0
 
 # Default wideband sample rate (Hz)
-DEFAULT_WIDEBAND_FS: float = 1_000_000.0
+DEFAULT_WIDEBAND_FS: float = 2_000_000.0

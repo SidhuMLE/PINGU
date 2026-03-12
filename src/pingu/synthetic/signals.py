@@ -13,6 +13,10 @@ from scipy.signal import hilbert, firwin, lfilter
 from pingu.types import ModulationType
 
 
+# Reference sample rate used to define base signal parameters.
+_BASE_RATE = 48_000.0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -21,6 +25,19 @@ def _time_vector(sample_rate: float, duration: float) -> NDArray[np.float64]:
     """Return a time vector [0, duration) at the given sample rate."""
     n_samples = int(sample_rate * duration)
     return np.arange(n_samples, dtype=np.float64) / sample_rate
+
+
+def _scale_rate(base_value: float, sample_rate: float) -> float:
+    """Scale a parameter proportionally from the 48 kHz base rate.
+
+    Args:
+        base_value: Parameter value at 48 kHz sample rate.
+        sample_rate: Actual sample rate in Hz.
+
+    Returns:
+        Scaled parameter value.
+    """
+    return base_value * (sample_rate / _BASE_RATE)
 
 
 def _root_raised_cosine(
@@ -98,11 +115,11 @@ def _freq_shift(
 # ---------------------------------------------------------------------------
 
 def generate_ssb(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
     sideband: str = "usb",
-    audio_bw: float = 3_000.0,
+    audio_bw: float | None = None,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
     """Generate a single-sideband (SSB) voice-like signal.
@@ -116,7 +133,7 @@ def generate_ssb(
         duration: Signal duration in seconds.
         center_freq: Relative centre frequency offset in Hz.
         sideband: ``"usb"`` or ``"lsb"``.
-        audio_bw: Audio bandwidth in Hz (default 3 kHz, typical for voice).
+        audio_bw: Audio bandwidth in Hz. If None, auto-scaled from sample rate.
         rng: Optional numpy random generator for reproducibility.
 
     Returns:
@@ -125,12 +142,16 @@ def generate_ssb(
     if rng is None:
         rng = np.random.default_rng()
 
+    if audio_bw is None:
+        audio_bw = _scale_rate(3_000.0, sample_rate)
+
     n_samples = int(sample_rate * duration)
 
     # Synthesise band-limited audio noise (300 Hz -- audio_bw)
     audio = rng.standard_normal(n_samples).astype(np.float64)
     # Band-pass filter the audio to speech-like bandwidth
-    low = 300.0 / (sample_rate / 2.0)
+    low_base = _scale_rate(300.0, sample_rate)
+    low = low_base / (sample_rate / 2.0)
     high = min(audio_bw, sample_rate / 2.0 - 1.0) / (sample_rate / 2.0)
     if high <= low:
         high = low + 0.01
@@ -158,10 +179,10 @@ def generate_ssb(
 
 
 def generate_cw(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    tone_freq: float = 600.0,
+    tone_freq: float | None = None,
     keying_pattern: list[float] | None = None,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
@@ -175,6 +196,7 @@ def generate_cw(
         duration: Signal duration in seconds.
         center_freq: Additional relative frequency offset in Hz.
         tone_freq: Tone frequency in Hz relative to baseband.
+            If None, defaults to 600 Hz (kept low to avoid TDoA ambiguity).
         keying_pattern: List of durations in seconds ``[on, off, on, off, ...]``.
             If ``None`` the tone is continuous.
         rng: Optional numpy random generator (unused, accepted for API uniformity).
@@ -182,6 +204,12 @@ def generate_cw(
     Returns:
         Complex64 IQ array.
     """
+    if tone_freq is None:
+        # CW tone must stay low to avoid periodic ambiguity in TDoA
+        # cross-correlation.  600 Hz gives unambiguous delays up to ~830 us
+        # (>200 km baseline).
+        tone_freq = 600.0
+
     t = _time_vector(sample_rate, duration)
     n_samples = len(t)
     total_freq = tone_freq + center_freq
@@ -213,10 +241,10 @@ def generate_cw(
 
 
 def generate_am(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    mod_freq: float = 1_000.0,
+    mod_freq: float | None = None,
     mod_index: float = 0.8,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
@@ -230,12 +258,19 @@ def generate_am(
         duration: Signal duration in seconds.
         center_freq: Carrier frequency offset in Hz.
         mod_freq: Modulating audio frequency in Hz.
+            If None, auto-scaled from sample rate.
         mod_index: Modulation depth in [0, 1].
         rng: Optional numpy random generator (unused, accepted for API uniformity).
 
     Returns:
         Complex64 IQ array.
     """
+    if mod_freq is None:
+        # AM with a pure-tone modulator produces only 3 spectral lines
+        # (carrier ± mod_freq), so it has periodic cross-correlation
+        # ambiguity at 1/mod_freq intervals.  Keep low to avoid this.
+        mod_freq = 1_000.0
+
     t = _time_vector(sample_rate, duration)
 
     # Modulating tone
@@ -258,12 +293,12 @@ def generate_am(
 
 
 def generate_fsk(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
     n_tones: int = 2,
-    symbol_rate: float = 100.0,
-    tone_spacing: float = 200.0,
+    symbol_rate: float | None = None,
+    tone_spacing: float | None = None,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
     """Generate a frequency-shift keying (FSK) signal with 2 or 4 tones.
@@ -277,7 +312,9 @@ def generate_fsk(
         center_freq: Centre frequency offset in Hz.
         n_tones: Number of FSK tones (2 or 4).
         symbol_rate: Symbol rate in symbols/s (baud).
+            If None, auto-scaled from sample rate.
         tone_spacing: Frequency separation between adjacent tones in Hz.
+            If None, auto-scaled from sample rate.
         rng: Optional numpy random generator for reproducibility.
 
     Returns:
@@ -287,6 +324,11 @@ def generate_fsk(
         rng = np.random.default_rng()
     if n_tones not in (2, 4):
         raise ValueError(f"n_tones must be 2 or 4, got {n_tones}")
+
+    if symbol_rate is None:
+        symbol_rate = _scale_rate(100.0, sample_rate)
+    if tone_spacing is None:
+        tone_spacing = _scale_rate(200.0, sample_rate)
 
     n_samples = int(sample_rate * duration)
     samples_per_symbol = int(sample_rate / symbol_rate)
@@ -327,11 +369,11 @@ def generate_fsk(
 
 
 def generate_fsk2(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    symbol_rate: float = 100.0,
-    tone_spacing: float = 200.0,
+    symbol_rate: float | None = None,
+    tone_spacing: float | None = None,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
     """Convenience wrapper for 2-FSK generation.  See :func:`generate_fsk`."""
@@ -347,11 +389,11 @@ def generate_fsk2(
 
 
 def generate_fsk4(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    symbol_rate: float = 100.0,
-    tone_spacing: float = 200.0,
+    symbol_rate: float | None = None,
+    tone_spacing: float | None = None,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
     """Convenience wrapper for 4-FSK generation.  See :func:`generate_fsk`."""
@@ -367,10 +409,10 @@ def generate_fsk4(
 
 
 def generate_bpsk(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    symbol_rate: float = 300.0,
+    symbol_rate: float | None = None,
     rolloff: float = 0.35,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
@@ -384,6 +426,7 @@ def generate_bpsk(
         duration: Signal duration in seconds.
         center_freq: Frequency offset in Hz.
         symbol_rate: Symbol rate in baud.
+            If None, auto-scaled from sample rate.
         rolloff: RRC roll-off factor.
         rng: Optional numpy random generator for reproducibility.
 
@@ -392,6 +435,9 @@ def generate_bpsk(
     """
     if rng is None:
         rng = np.random.default_rng()
+
+    if symbol_rate is None:
+        symbol_rate = _scale_rate(300.0, sample_rate)
 
     n_samples = int(sample_rate * duration)
     sps = int(sample_rate / symbol_rate)  # samples per symbol
@@ -430,10 +476,10 @@ def generate_bpsk(
 
 
 def generate_qpsk(
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
-    symbol_rate: float = 300.0,
+    symbol_rate: float | None = None,
     rolloff: float = 0.35,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.complex64]:
@@ -447,6 +493,7 @@ def generate_qpsk(
         duration: Signal duration in seconds.
         center_freq: Frequency offset in Hz.
         symbol_rate: Symbol rate in baud.
+            If None, auto-scaled from sample rate.
         rolloff: RRC roll-off factor.
         rng: Optional numpy random generator for reproducibility.
 
@@ -455,6 +502,9 @@ def generate_qpsk(
     """
     if rng is None:
         rng = np.random.default_rng()
+
+    if symbol_rate is None:
+        symbol_rate = _scale_rate(300.0, sample_rate)
 
     n_samples = int(sample_rate * duration)
     sps = int(sample_rate / symbol_rate)
@@ -491,6 +541,37 @@ def generate_qpsk(
     return sig
 
 
+def generate_noise_signal(
+    sample_rate: float = 2_000_000.0,
+    duration: float = 0.1,
+    center_freq: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> NDArray[np.complex64]:
+    """Generate a complex Gaussian noise signal.
+
+    Args:
+        sample_rate: Sample rate in Hz.
+        duration: Signal duration in seconds.
+        center_freq: Frequency offset in Hz (applied as frequency shift).
+        rng: Optional numpy random generator for reproducibility.
+
+    Returns:
+        Complex64 IQ array with unit power.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n_samples = int(sample_rate * duration)
+    sig = (
+        rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples)
+    ).astype(np.complex64) / np.sqrt(2.0)
+
+    if center_freq != 0.0:
+        sig = _freq_shift(sig, center_freq, sample_rate)
+
+    return sig.astype(np.complex64)
+
+
 # ---------------------------------------------------------------------------
 # Lookup table: ModulationType -> generator function
 # ---------------------------------------------------------------------------
@@ -503,12 +584,13 @@ GENERATORS: dict = {
     ModulationType.FSK4: generate_fsk4,
     ModulationType.BPSK: generate_bpsk,
     ModulationType.QPSK: generate_qpsk,
+    ModulationType.NOISE: generate_noise_signal,
 }
 
 
 def generate_signal(
     modulation: ModulationType,
-    sample_rate: float = 48_000.0,
+    sample_rate: float = 2_000_000.0,
     duration: float = 0.1,
     center_freq: float = 0.0,
     rng: np.random.Generator | None = None,

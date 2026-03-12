@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from numpy.typing import NDArray
 from omegaconf import DictConfig
+from scipy.signal import firwin, lfilter
 
 from pingu.channelizer.polyphase import PolyphaseChannelizer
 from pingu.channelizer.fft import FFTChannelizer
@@ -25,6 +27,7 @@ from pingu.tdoa.pair_manager import PairManager
 from pingu.types import (
     ChannelizedFrame,
     Detection,
+    FrameTrace,
     IQFrame,
     PositionEstimate,
     ReceiverConfig,
@@ -33,14 +36,85 @@ from pingu.types import (
 logger = logging.getLogger(__name__)
 
 
+def _bandpass_filter(
+    signal: NDArray[np.complex64],
+    center_freq: float,
+    bandwidth: float,
+    fs: float,
+) -> NDArray[np.complex64]:
+    """Bandpass filter a wideband IQ signal around a channel's frequency band.
+
+    Shifts the signal so the target channel is at DC, applies a lowpass FIR
+    filter of width *bandwidth*, then shifts back.  This works correctly for
+    both positive and negative baseband offsets.
+
+    Args:
+        signal: Wideband complex IQ signal.
+        center_freq: Baseband offset of the target channel (Hz), i.e.
+            the channel's absolute RF frequency minus the IQ center frequency.
+        bandwidth: Bandwidth of the channel (Hz).
+        fs: Sample rate of the signal (Hz).
+
+    Returns:
+        Bandpass-filtered complex64 signal at full sample rate.
+    """
+    n = len(signal)
+    nyquist = fs / 2.0
+
+    # Frequency-shift to bring the channel to DC
+    t = np.arange(n, dtype=np.float64) / fs
+    shifted = signal * np.exp(-2j * np.pi * center_freq * t)
+
+    # Lowpass filter: keep ±bandwidth/2 around DC (with 20% margin)
+    cutoff = bandwidth * 0.6 / nyquist
+    cutoff = min(cutoff, 0.999)
+    if cutoff <= 0.001:
+        return signal
+
+    n_taps = 101
+    taps = firwin(n_taps, cutoff)
+    filtered = lfilter(taps, 1.0, shifted)
+
+    # Shift back to original frequency
+    filtered = filtered * np.exp(2j * np.pi * center_freq * t)
+
+    return filtered.astype(np.complex64)
+
+
+def _compute_max_delay_from_geometry(
+    receivers: list[ReceiverConfig],
+    fs: float,
+    margin: float = 1.5,
+) -> int:
+    """Compute max delay samples from receiver baseline geometry.
+
+    Args:
+        receivers: List of receiver configurations.
+        fs: Sample rate in Hz.
+        margin: Safety margin factor (default 1.5 = 50% extra).
+
+    Returns:
+        Maximum delay in samples.
+    """
+    from pingu.constants import SPEED_OF_LIGHT
+
+    max_dist = 0.0
+    for i in range(len(receivers)):
+        for j in range(i + 1, len(receivers)):
+            dx = receivers[i].x - receivers[j].x
+            dy = receivers[i].y - receivers[j].y
+            dist = np.sqrt(dx * dx + dy * dy)
+            max_dist = max(max_dist, dist)
+
+    max_delay_s = max_dist / SPEED_OF_LIGHT
+    return int(np.ceil(max_delay_s * fs * margin))
+
+
 class PinguPipeline:
     """End-to-end TDoA geolocation pipeline.
 
     Orchestrates channelization, signal detection, TDoA estimation, Kalman
     integration, convergence monitoring, and non-linear position solving.
-
-    The pipeline is initialised from an OmegaConf ``DictConfig`` and operates
-    on dictionaries of per-receiver :class:`IQFrame` objects.
 
     Parameters
     ----------
@@ -71,7 +145,7 @@ class PinguPipeline:
         method = chan_cfg.get("method", "polyphase")
         n_channels = int(chan_cfg.get("n_channels", 64))
         if method == "polyphase":
-            overlap_factor = int(chan_cfg.get("overlap_factor", 2))
+            overlap_factor = int(chan_cfg.get("overlap_factor", 4))
             window = chan_cfg.get("window", "hann")
             self.channelizer = PolyphaseChannelizer(
                 n_channels=n_channels,
@@ -85,7 +159,7 @@ class PinguPipeline:
         det_cfg = config.detector
         self.detector = EnergyDetector(
             pfa=float(det_cfg.get("pfa", 1e-6)),
-            block_size=int(det_cfg.get("block_size", 1024)),
+            block_size=int(det_cfg.get("block_size", 32768)),
             guard_cells=int(det_cfg.get("guard_cells", 4)),
             reference_cells=int(det_cfg.get("reference_cells", 16)),
         )
@@ -109,7 +183,17 @@ class PinguPipeline:
         # --- TDoA pair management ----------------------------------------
         self.pair_manager = PairManager(self._receiver_ids)
         self._tdoa_method: str = config.tdoa.get("method", "phat")
-        self._fft_size: int = int(config.tdoa.get("fft_size", 4096))
+        self._fft_size: int = int(config.tdoa.get("fft_size", 131072))
+
+        # --- max_delay_samples from config or geometry ---
+        cfg_max_delay = config.tdoa.get("max_delay_samples", None)
+        if cfg_max_delay is not None:
+            self._max_delay_samples: int = int(cfg_max_delay)
+        else:
+            fs = float(config.receivers.get("sample_rate", 2_000_000.0))
+            self._max_delay_samples = _compute_max_delay_from_geometry(
+                self._receivers, fs
+            )
 
         # --- Kalman filter -----------------------------------------------
         n_pairs = self.pair_manager.n_pairs
@@ -129,7 +213,10 @@ class PinguPipeline:
 
         # Diagnostic history for visualization.
         self.variance_history: list[np.ndarray] = []
-        self.last_correlations: list[tuple[np.ndarray, np.ndarray, str]] = []
+
+        # Per-frame traces.
+        self.traces: list[FrameTrace] = []
+        self._frame_counter: int = 0
 
         # --- Locator / solver -------------------------------------------
         geometry = ReceiverGeometry(self._receivers)
@@ -156,10 +243,10 @@ class PinguPipeline:
         Steps:
             1. Channelize each receiver's wideband IQ.
             2. Detect signals in each channelized output.
-            3. For detected signals, extract the narrowband IQ for TDoA.
-            4. Estimate TDoAs for all receiver pairs.
-            5. Update the Kalman filter.
-            6. If converged, solve for the transmitter position.
+            3. Bandpass filter wideband IQ to the detected channel, then
+               estimate TDoAs at full sample rate.
+            4. Update the Kalman filter.
+            5. If converged, solve for the transmitter position.
 
         Args:
             frames: Mapping from receiver ID to its :class:`IQFrame`.
@@ -168,10 +255,23 @@ class PinguPipeline:
             A :class:`PositionEstimate` if the filter has converged and a
             position was successfully solved, otherwise ``None``.
         """
+        self._frame_counter += 1
+        timestamp = next(iter(frames.values())).timestamp
+        trace = FrameTrace(
+            frame_index=self._frame_counter,
+            timestamp=timestamp,
+        )
+
         # 1. Channelize
         channelized: dict[str, ChannelizedFrame] = {}
         for rx_id, frame in frames.items():
             channelized[rx_id] = self.channelizer.channelize(frame)
+
+        # Trace: channels with energy
+        if channelized:
+            first_ch = next(iter(channelized.values()))
+            ch_energy = np.sum(np.abs(first_ch.channels) ** 2, axis=1)
+            trace.n_channels_with_energy = int(np.sum(ch_energy > 0))
 
         # 2. Detect signals per receiver
         detections: dict[str, list[Detection]] = {}
@@ -179,6 +279,12 @@ class PinguPipeline:
             det = self.detector.detect(ch_frame)
             if det:
                 detections[rx_id] = det
+
+        # Trace: detections
+        all_dets = [d for dets in detections.values() for d in dets]
+        trace.n_detections = len(all_dets)
+        trace.detected_channels = sorted(set(d.channel_index for d in all_dets))
+        trace.detection_snrs_db = [d.snr_estimate for d in all_dets]
 
         # 2b. Classify detected signals (if classifier is available).
         detected_modulation = None
@@ -193,6 +299,8 @@ class PinguPipeline:
                                 det.modulation = mod
                                 det.confidence = conf
                                 detected_modulation = mod
+                                trace.classified_modulation = mod.value if hasattr(mod, 'value') else str(mod)
+                                trace.classification_confidence = conf
                         except Exception:
                             logger.debug(
                                 "Classification failed for %s", rx_id,
@@ -205,22 +313,60 @@ class PinguPipeline:
             logger.debug("Auto-selected GCC method: %s (mod=%s)", tdoa_method, detected_modulation)
         else:
             tdoa_method = self._tdoa_method
+        trace.gcc_method_used = tdoa_method
 
         # 3. Select IQ for TDoA estimation.
-        #    Always use full-rate wideband IQ for TDoA — the channelizer
-        #    decimates to fs/M which destroys time-delay resolution.
-        #    The channelizer's role is detection and classification only.
+        #    Bandpass filter wideband IQ to detected channel band, keeping
+        #    full sample rate for maximum time-delay resolution.
+        sample_rate = next(iter(frames.values())).sample_rate
         signals_for_tdoa: dict[str, np.ndarray] = {}
-        for rx_id, frame in frames.items():
-            signals_for_tdoa[rx_id] = frame.samples
+
+        common_channel = self._find_common_channel(detections, channelized)
+        if common_channel is not None and channelized:
+            # Get channel parameters from any channelized frame
+            ref_ch_frame = next(iter(channelized.values()))
+            ch_bandwidth = ref_ch_frame.channel_bw
+            n_ch = ref_ch_frame.channels.shape[0]
+
+            # Compute baseband offset from channel index.
+            # The polyphase channelizer's FFT output: channel k corresponds
+            # to baseband frequency k * bw for k < N/2, and (k - N) * bw
+            # for k >= N/2 (standard FFT ordering).
+            if common_channel < n_ch // 2:
+                ch_offset = common_channel * ch_bandwidth
+            else:
+                ch_offset = (common_channel - n_ch) * ch_bandwidth
+
+            trace.selected_channel = common_channel
+            trace.selected_channel_freq = float(ref_ch_frame.channel_freqs[common_channel])
+
+            for rx_id, frame in frames.items():
+                signals_for_tdoa[rx_id] = _bandpass_filter(
+                    frame.samples, ch_offset, ch_bandwidth, sample_rate
+                )
+
+            # After bandpass filtering, always use basic cross-correlation.
+            # The filter already removes out-of-band noise; PHAT/SCOT would
+            # whiten the mostly-empty spectrum and amplify stopband leakage.
+            tdoa_method = "basic"
+            trace.gcc_method_used = tdoa_method
+        else:
+            # Fallback: use full wideband IQ
+            for rx_id, frame in frames.items():
+                signals_for_tdoa[rx_id] = frame.samples
 
         # 4. Estimate TDoAs for all pairs.
-        sample_rate = next(iter(frames.values())).sample_rate
         tdoa_estimates = self.pair_manager.estimate_all_tdoas(
             signals=signals_for_tdoa,
             fs=sample_rate,
             method=tdoa_method,
+            max_delay_samples=self._max_delay_samples,
         )
+
+        # Trace: TDoA results
+        trace.tdoa_delays_s = [est.delay for est in tdoa_estimates]
+        trace.tdoa_variances = [est.variance for est in tdoa_estimates]
+        trace.tdoa_peak_values = [est.correlation_peak for est in tdoa_estimates]
 
         # Build measurement vectors for the Kalman filter.
         measurements = np.array(
@@ -229,18 +375,22 @@ class PinguPipeline:
         variances = np.array(
             [est.variance for est in tdoa_estimates], dtype=np.float64
         )
-        timestamp = next(iter(frames.values())).timestamp
 
         # 5. Kalman predict + update.
         self.kalman.predict()
-        self.kalman.update(measurements, variances, timestamp=timestamp)
+        innovation = self.kalman.update(measurements, variances, timestamp=timestamp)
+
+        # Trace: Kalman state
+        trace.kalman_innovation = innovation
+        state = self.kalman.get_state()
+        trace.kalman_covariance_diag = np.diag(state.covariance).copy()
 
         # Update convergence monitor and record variance history.
-        state = self.kalman.get_state()
         self.convergence_monitor.update(state.covariance)
         self.variance_history.append(np.diag(state.covariance).copy())
 
         # 6. Check convergence and solve.
+        result = None
         if self.convergence_monitor.is_converged(factor=self._convergence_factor):
             integrated = self.kalman.get_state()
             # Weights for the solver: 1 / sigma (std dev).
@@ -258,7 +408,9 @@ class PinguPipeline:
                     position.y,
                     self.kalman.n_updates,
                 )
-                return position
+                trace.position_estimate = position
+                trace.solver_converged = True
+                result = position
             except Exception:
                 logger.warning(
                     "Solver failed after %d updates; continuing integration.",
@@ -266,7 +418,8 @@ class PinguPipeline:
                     exc_info=True,
                 )
 
-        return None
+        self.traces.append(trace)
+        return result
 
     def run(
         self, scenario_frames: list[dict[str, IQFrame]]
@@ -314,7 +467,7 @@ class PinguPipeline:
         """Build a default pentagon receiver layout from config."""
         n = int(config.receivers.get("count", 5))
         R = 100_000.0  # 100 km radius
-        sample_rate = float(config.receivers.get("sample_rate", 48_000.0))
+        sample_rate = float(config.receivers.get("sample_rate", 2_000_000.0))
         receivers = []
         for i in range(n):
             angle = np.pi / 2 + 2 * np.pi * i / n

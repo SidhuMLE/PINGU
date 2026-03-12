@@ -103,7 +103,7 @@ class TDoAKalmanFilter:
         measurements: NDArray[np.float64],
         measurement_noise: NDArray[np.float64],
         timestamp: float = 0.0,
-    ) -> None:
+    ) -> NDArray[np.float64]:
         """Incorporate a new set of TDoA observations.
 
         Parameters
@@ -115,6 +115,11 @@ class TDoAKalmanFilter:
             the diagonal of the measurement noise covariance R.
         timestamp : float, optional
             UNIX epoch time associated with this measurement set.
+
+        Returns
+        -------
+        ndarray, shape (n_pairs,)
+            Innovation vector (z - x_prior).
         """
         z = np.asarray(measurements, dtype=np.float64).ravel()
         r = np.asarray(measurement_noise, dtype=np.float64).ravel()
@@ -154,6 +159,8 @@ class TDoAKalmanFilter:
 
         self._n_updates += 1
         self._timestamp = timestamp
+
+        return y.copy()
 
     def get_state(self) -> IntegratedTDoA:
         """Return the current filtered TDoA estimates as an ``IntegratedTDoA``.

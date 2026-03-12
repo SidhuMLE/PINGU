@@ -208,6 +208,96 @@ class ScenarioReport:
                 ])
 
     # ------------------------------------------------------------------
+    # Frame traces
+    # ------------------------------------------------------------------
+
+    def print_frame_traces(
+        self,
+        scenario_index: int = 0,
+        max_frames: int = 20,
+        file=None,
+    ) -> None:
+        """Print per-frame diagnostic traces for a scenario.
+
+        Args:
+            scenario_index: Index of the scenario in the results list.
+            max_frames: Maximum number of frames to display.
+            file: Output file object (default stdout).
+        """
+        if file is None:
+            file = sys.stdout
+
+        if scenario_index >= len(self._results):
+            print(f"Scenario index {scenario_index} out of range.", file=file)
+            return
+
+        result = self._results[scenario_index]
+        traces = getattr(result, "traces", None)
+        if not traces:
+            print("No trace data available for this scenario.", file=file)
+            return
+
+        print(
+            f"\n--- Frame Traces: {result.spec.name} ---",
+            file=file,
+        )
+        header = (
+            f"{'Frame':>5} | {'Dets':>4} | {'Ch':>6} | "
+            f"{'GCC':>5} | {'Mean TDoA Err':>14} | "
+            f"{'Kalman Var':>10} | {'Position':>20} | {'Solver':>6}"
+        )
+        print(header, file=file)
+        print("-" * len(header), file=file)
+
+        for trace in traces[:max_frames]:
+            # Detection info
+            ch_str = str(trace.detected_channels[:3]) if trace.detected_channels else "-"
+            if len(ch_str) > 6:
+                ch_str = ch_str[:6]
+
+            # TDoA error
+            if trace.tdoa_true_delays_s and trace.tdoa_delays_s:
+                errors = [
+                    abs(e - t)
+                    for e, t in zip(trace.tdoa_delays_s, trace.tdoa_true_delays_s)
+                ]
+                mean_err_us = np.mean(errors) * 1e6
+                err_str = f"{mean_err_us:12.2f} us"
+            else:
+                err_str = "             -"
+
+            # Kalman variance
+            if trace.kalman_covariance_diag is not None:
+                mean_var = float(np.mean(trace.kalman_covariance_diag))
+                var_str = f"{mean_var:10.2e}"
+            else:
+                var_str = "         -"
+
+            # Position
+            if trace.position_estimate is not None:
+                pos = trace.position_estimate
+                pos_str = f"({pos.x:.0f}, {pos.y:.0f})"
+            else:
+                pos_str = "-"
+
+            # Solver
+            solver_str = "OK" if trace.solver_converged else "-"
+
+            print(
+                f"{trace.frame_index:>5} | "
+                f"{trace.n_detections:>4} | "
+                f"{ch_str:>6} | "
+                f"{trace.gcc_method_used:>5} | "
+                f"{err_str} | "
+                f"{var_str} | "
+                f"{pos_str:>20} | "
+                f"{solver_str:>6}",
+                file=file,
+            )
+
+        print(file=file)
+
+    # ------------------------------------------------------------------
     # Comparison plots
     # ------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ _project_root = Path(__file__).resolve().parents[1]
 if str(_project_root / "src") not in sys.path:
     sys.path.insert(0, str(_project_root / "src"))
 
+from pingu.scenarios.runner import build_receivers
 from pingu.synthetic.scenarios import TDoAScenario
 from pingu.types import ModulationType, ReceiverConfig
 
@@ -76,32 +77,6 @@ def parse_args() -> argparse.Namespace:
         help="Random seed (default: 42)",
     )
     return parser.parse_args()
-
-
-def build_receivers(n: int = 5, radius: float = 100_000.0) -> list[ReceiverConfig]:
-    """Create a regular polygon of receivers.
-
-    Args:
-        n: Number of receiver stations.
-        radius: Radius of the polygon in metres.
-
-    Returns:
-        List of ReceiverConfig with Cartesian x, y positions.
-    """
-    receivers = []
-    for i in range(n):
-        angle = np.pi / 2 + 2 * np.pi * i / n
-        receivers.append(
-            ReceiverConfig(
-                id=f"RX{i}",
-                latitude=40.0 + 0.3 * np.sin(angle),
-                longitude=-75.0 + 0.4 * np.cos(angle),
-                x=radius * np.cos(angle),
-                y=radius * np.sin(angle),
-                sample_rate=48_000.0,
-            )
-        )
-    return receivers
 
 
 def main() -> None:

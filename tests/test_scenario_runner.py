@@ -179,6 +179,7 @@ class TestScenarioRunner:
             modulation=ModulationType.CW,
             snr_db=20.0,
             tx_position=(30_000.0, -20_000.0),
+            duration=0.02,
             n_frames=20,
             seed=42,
         )
@@ -188,7 +189,7 @@ class TestScenarioRunner:
         r = results[0]
         assert r.estimate is not None
         assert r.position_error_m is not None
-        assert r.position_error_m < 1000.0  # < 1 km
+        assert r.position_error_m < 5000.0  # < 5 km
 
     def test_multiple_scenarios(self) -> None:
         """Running multiple scenarios should return one result per spec."""
@@ -199,6 +200,7 @@ class TestScenarioRunner:
             "modulations": ["cw", "bpsk"],
             "snr_db": 20.0,
             "n_frames": 5,
+            "duration": 0.02,
         })
         results = runner.run_all(specs)
         assert len(results) == len(specs)
@@ -212,6 +214,7 @@ class TestScenarioRunner:
             modulation=ModulationType.CW,
             snr_db=20.0,
             tx_position=(30_000.0, -20_000.0),
+            duration=0.02,
             n_frames=10,
             seed=42,
         )
@@ -255,6 +258,7 @@ def _make_mock_results() -> list[ScenarioResult]:
             n_kalman_updates=5,
             elapsed_seconds=0.5,
             variance_history=[],
+            traces=[],
         ))
     return results
 

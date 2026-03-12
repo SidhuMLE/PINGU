@@ -88,7 +88,7 @@ class TDoAScenario:
 
     receivers: list[ReceiverConfig]
     tx_position: tuple[float, float]
-    sample_rate: float = 48_000.0
+    sample_rate: float = 2_000_000.0
     center_freq: float = 14.1e6
     snr_db: float = 20.0
     duration: float = 0.1
